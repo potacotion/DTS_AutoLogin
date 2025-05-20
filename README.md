@@ -76,7 +76,7 @@
 
 如果你有任何问题、建议或者想要交流，可以通过以下方式联系我：
 *   **GitHub Issues**
-*   **Email**: `tomnamecxc@outlook.com`
+*   **Email**:  `tomnamecxc@outlook.com`
 
 
 ---
