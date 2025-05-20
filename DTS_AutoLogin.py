@@ -33,7 +33,8 @@ def load_or_create_config():
         'mac_address': MAC_ADDRESS_DEFAULT,
         'service_name': SERVICE_NAME_DEFAULT,
         'operator_id': OPERATOR_ID_DEFAULT,
-        'operator_password': OPERATOR_PASSWORD_DEFAULT
+        'operator_password': OPERATOR_PASSWORD_DEFAULT,
+        'query_string_manual': ''  # Ensure this is part of defaults if used
     }
 
     loaded_settings = defaults.copy()
@@ -42,21 +43,26 @@ def load_or_create_config():
         try:
             config.read(CONFIG_FILE_NAME)
             if 'Settings' in config:
-                for key in defaults:
+                for key in defaults:  # Use defaults.keys() to ensure all expected keys are checked
                     loaded_settings[key] = config['Settings'].get(key, defaults[key])
             else:
                 print(f"Section [Settings] not found in {CONFIG_FILE_NAME}. Using defaults and creating section.")
-                config['Settings'] = defaults
+                config['Settings'] = defaults  # Assign all defaults to the new section
                 with open(CONFIG_FILE_NAME, 'w') as configfile:
                     config.write(configfile)
                 print(f"Please update {CONFIG_FILE_NAME} with your actual settings.")
         except configparser.Error as e:
             print(f"Error reading {CONFIG_FILE_NAME}: {e}. Using default settings.")
-            config['Settings'] = defaults
+            # In case of read error, try to re-create with defaults if section is missing or file is corrupt
+            if 'Settings' not in config:  # Check if section exists before trying to assign
+                config['Settings'] = {}  # Create section if it doesn't exist
+            for key, value in defaults.items():  # Ensure all default keys are present in the config object
+                config['Settings'][key] = config['Settings'].get(key, value)  # Get existing or set default
             try:
-                with open(CONFIG_FILE_NAME, 'w') as configfile:
+                with open(CONFIG_FILE_NAME, 'w') as configfile:  # Write out the potentially repaired config
                     config.write(configfile)
-                print(f"Created {CONFIG_FILE_NAME} with default settings. Please update it.")
+                print(
+                    f"Re-created/Repaired {CONFIG_FILE_NAME} with default/merged settings. Please update it if necessary.")
             except IOError:
                 print(f"Could not write {CONFIG_FILE_NAME}. Please check permissions.")
     else:
@@ -175,52 +181,62 @@ def get_page_info(session, base_url, query_string):  # Added session parameter
         return None
 
 
-def main():
-    """Main function to perform login."""
-    print("Campus Network Auto Login Script")
-    print("=" * 30)
-
-    settings = load_or_create_config()
-    session = requests.Session()  # Create a session object
-
+def attempt_DTS_AutoLogin(settings, session):
+    """
+    Attempts to perform the campus network login.
+    Args:
+        settings (dict): A dictionary containing configuration like username, password, etc.
+        session (requests.Session): An active requests session object.
+    Returns:
+        dict: A dictionary with keys 'success' (bool) and 'message' (str),
+              and optionally 'details' (dict) from login_result.
+    """
     username = settings['username']
     password = settings['password']
     base_url = settings['base_url']
-    mac_address = settings['mac_address']
+    # mac_address is determined later based on query_string or config
     service_name = settings['service_name']
     operator_id = settings['operator_id']
     operator_password = settings['operator_password']
 
+    # For GUI logging, we might want to collect messages instead of just printing.
+    # For now, existing prints will serve for CLI, GUI can capture stdout if needed or we can add explicit logging.
+    # log_messages = [] # Example for collecting logs
+
     if username == "1" or password == "1":
-        print(f"\nWARNING: Using default username/password ('1').")
-        print(f"Please ensure {CONFIG_FILE_NAME} is updated with your actual credentials for successful login.")
+        # msg = f"警告: 使用默认用户名/密码 ('1')。请确保 {CONFIG_FILE_NAME} 已更新为您的实际凭据。"
+        print(f"\n警告: 使用默认用户名/密码 ('1')。请确保 {CONFIG_FILE_NAME} 已更新为您的实际凭据。")
+        # log_messages.append(msg)
 
-    print(f"\nUsing Username: {username}")
-    print(f"Using Base URL: {base_url}")
-    # mac_address from config is loaded into settings['mac_address']
+    print(f"\n使用用户名: {username}")
+    print(f"使用 Base URL: {base_url}")
+    # log_messages.append(f"使用用户名: {username}, Base URL: {base_url}")
 
-    current_query_string = get_query_string_from_captive_portal_with_session(session,
-                                                                             CAPTIVE_PORTAL_DETECTION_URL)  # Pass session
+    current_query_string = get_query_string_from_captive_portal_with_session(session, CAPTIVE_PORTAL_DETECTION_URL)
 
     if not current_query_string:
-        print("\nWarning: Failed to automatically detect QUERY_STRING from captive portal.")
-        print(f"Attempting to use manually configured 'query_string_manual' from {CONFIG_FILE_NAME} if available.")
-        current_query_string = settings.get('query_string_manual', '')
-        if not current_query_string:
-            print(
-                f"Error: No QUERY_STRING available (neither auto-detected nor manually configured in {CONFIG_FILE_NAME}). Aborting.")
-            print(
-                f"Please ensure you are connected to the target Wi-Fi and not yet authenticated, or provide 'query_string_manual'.")
-            return
-        else:
-            print(f"Using manually configured query_string from {CONFIG_FILE_NAME}: {current_query_string}")
-    else:
-        print(f"Using automatically detected query_string: {current_query_string}")
+        # msg = "警告: 未能从强制门户自动检测到 QUERY_STRING。"
+        print("\n警告: 未能从强制门户自动检测到 QUERY_STRING。")
+        # log_messages.append(msg)
 
-    # Determine the MAC address (or equivalent ID) to use for encryption
-    mac_address_from_config = settings.get('mac_address',
-                                           MAC_ADDRESS_DEFAULT)  # Get from settings, fallback to global default
-    mac_address_for_encryption = mac_address_from_config  # Default to config value
+        manual_qs = settings.get('query_string_manual', '')
+        if manual_qs:
+            current_query_string = manual_qs
+            # msg = f"尝试使用 {CONFIG_FILE_NAME} 中手动配置的 'query_string_manual': {current_query_string}"
+            print(f"尝试使用 {CONFIG_FILE_NAME} 中手动配置的 'query_string_manual': {current_query_string}")
+            # log_messages.append(msg)
+        else:
+            # msg = f"错误: 没有可用的 QUERY_STRING (既未自动检测到，也未在 {CONFIG_FILE_NAME} 中手动配置)。正在中止。"
+            print(f"错误: 没有可用的 QUERY_STRING (既未自动检测到，也未在 {CONFIG_FILE_NAME} 中手动配置)。正在中止。")
+            # log_messages.append(msg)
+            return {"success": False, "message": "没有可用的 QUERY_STRING"}  # Simplified message for return
+    else:
+        # msg = f"使用自动检测到的 query_string: {current_query_string}"
+        print(f"使用自动检测到的 query_string: {current_query_string}")
+        # log_messages.append(msg)
+
+    mac_address_from_config = settings.get('mac_address', MAC_ADDRESS_DEFAULT)
+    mac_address_for_encryption = mac_address_from_config
     mac_param_name_in_qs = 'mac'
 
     if current_query_string:
@@ -228,111 +244,111 @@ def main():
             parsed_qs = urllib.parse.parse_qs(current_query_string)
             if mac_param_name_in_qs in parsed_qs and parsed_qs[mac_param_name_in_qs]:
                 mac_from_qs = parsed_qs[mac_param_name_in_qs][0]
-                # Assuming the value from query_string is already in the correct format (e.g., continuous hex)
-                # and does not need further cleaning for now.
-                print(
-                    f"MAIN_PY: Found '{mac_param_name_in_qs}' in query_string: '{mac_from_qs}'. Using this for encryption.")
+                # msg = f"在 query_string 中找到 '{mac_param_name_in_qs}': '{mac_from_qs}'。将此用于加密。"
+                print(f"在 query_string 中找到 '{mac_param_name_in_qs}': '{mac_from_qs}'。将此用于加密。")
+                # log_messages.append(msg)
                 mac_address_for_encryption = mac_from_qs
             else:
+                # msg = f"在 query_string 中未找到 '{mac_param_name_in_qs}'。使用配置中的 MAC: '{mac_address_from_config}'"
                 print(
-                    f"MAIN_PY: '{mac_param_name_in_qs}' not found in query_string. Using MAC from config: '{mac_address_from_config}'")
+                    f"在 query_string 中未找到 '{mac_param_name_in_qs}'。使用配置中的 MAC: '{mac_address_from_config}'")
+                # log_messages.append(msg)
         except Exception as e:
-            print(
-                f"MAIN_PY: Error parsing MAC from query_string: {e}. Using MAC from config: '{mac_address_from_config}'")
-    else:
-        # This case should ideally be handled by the query_string check above,
-        # but as a fallback, if current_query_string is None or empty.
-        print(
-            f"MAIN_PY: No query_string available to parse for '{mac_param_name_in_qs}'. Using MAC from config: '{mac_address_from_config}'")
+            # msg = f"从 query_string 解析 MAC 时出错: {e}。使用配置中的 MAC: '{mac_address_from_config}'"
+            print(f"从 query_string 解析 MAC 时出错: {e}。使用配置中的 MAC: '{mac_address_from_config}'")
+            # log_messages.append(msg)
+    else:  # Should not happen if previous checks are correct, but defensive.
+        # msg = f"没有可用于解析 '{mac_param_name_in_qs}' 的 query_string。使用配置中的 MAC: '{mac_address_from_config}'"
+        print(f"没有可用于解析 '{mac_param_name_in_qs}' 的 query_string。使用配置中的 MAC: '{mac_address_from_config}'")
+        # log_messages.append(msg)
 
-    print(f"MAIN_PY: Final MAC/ID for encryption: '{mac_address_for_encryption}'")
+    # msg = f"最终用于加密的 MAC/ID: '{mac_address_for_encryption}'"
+    print(f"最终用于加密的 MAC/ID: '{mac_address_for_encryption}'")
+    # log_messages.append(msg)
 
-    # --- BEGIN: Added step to pre-fetch cookies ---
     parsed_base_url_for_cookie = urllib.parse.urlparse(base_url)
-    # Construct host part for cookie fetching URL (scheme://hostname, without non-standard port to match captured Origin/Referer)
     cookie_fetch_host_part = f"{parsed_base_url_for_cookie.scheme}://{parsed_base_url_for_cookie.hostname}"
-
-    # Construct the URL for fetching cookies, using the original query string
-    # This URL should point to the main eportal page, typically index.jsp
     cookie_fetch_url = f"{cookie_fetch_host_part}/eportal/index.jsp?{current_query_string}"
 
-    print(f"\nAttempting to pre-fetch cookies by visiting: {cookie_fetch_url}")
+    # msg = f"\n尝试通过访问以下网址预取 Cookie: {cookie_fetch_url}"
+    print(f"\n尝试通过访问以下网址预取 Cookie: {cookie_fetch_url}")
+    # log_messages.append(msg.strip())
+
     headers_for_cookie_fetch = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
-        # "Referer": cookie_fetch_url, # Optional: Referer to itself or a known entry point
-        # "Origin": cookie_fetch_host_part, # Optional for a GET request
     }
     try:
-        # Make the GET request to fetch cookies
         cookie_response = session.get(cookie_fetch_url, headers=headers_for_cookie_fetch, timeout=10,
                                       allow_redirects=True)
-        print(f"Cookie pre-fetch request to {cookie_fetch_url} completed with status: {cookie_response.status_code}")
-        print(f"Session cookies after pre-fetch: {session.cookies.get_dict()}")
+        # msg = f"对 {cookie_fetch_url} 的 Cookie 预取请求已完成，状态: {cookie_response.status_code}"
+        print(f"对 {cookie_fetch_url} 的 Cookie 预取请求已完成，状态: {cookie_response.status_code}")
+        # log_messages.append(msg)
+        # msg = f"预取后的会话 Cookie: {session.cookies.get_dict()}"
+        print(f"预取后的会话 Cookie: {session.cookies.get_dict()}")  # Keep for CLI debugging
+        # log_messages.append(msg) # Cookie details might be too verbose for GUI log
 
-        # --- BEGIN: Manually set/override specific cookies in the session ---
         cookie_domain_to_set = parsed_base_url_for_cookie.hostname
-
-        # Determine the application path for cookies
         app_path = parsed_base_url_for_cookie.path
-        if not app_path or not app_path.startswith('/'):  # Ensure it's a valid path
+        if not app_path or not app_path.startswith('/'):
             app_path = "/"
-        if not app_path.endswith('/'):  # Ensure path ends with / if it's a directory-like path
-            # Only add trailing slash if it's not the root path itself and doesn't have one
-            if app_path != "/":
-                app_path += '/'
-
-        # If base_url is like "http://.../eportal/", app_path should be "/eportal/"
-        # If base_url is like "http://.../", app_path should be "/"
+        if not app_path.endswith('/') and app_path != "/":
+            app_path += '/'
 
         cookies_to_set_manually = {
-            "EPORTAL_COOKIE_SAVEPASSWORD": "false",
-            "EPORTAL_COOKIE_SERVER": "",
-            "EPORTAL_COOKIE_DOMAIN": "",
-            "EPORTAL_COOKIE_OPERATORPWD": "",
-            "EPORTAL_AUTO_LAND": "",
-            "EPORTAL_COOKIE_USERNAME": "",
-            "EPORTAL_COOKIE_PASSWORD": "",
-            "EPORTAL_COOKIE_NEWV": "",
-            "EPORTAL_USER_GROUP": "",
+            "EPORTAL_COOKIE_SAVEPASSWORD": "false", "EPORTAL_COOKIE_SERVER": "", "EPORTAL_COOKIE_DOMAIN": "",
+            "EPORTAL_COOKIE_OPERATORPWD": "", "EPORTAL_AUTO_LAND": "", "EPORTAL_COOKIE_USERNAME": "",
+            "EPORTAL_COOKIE_PASSWORD": "", "EPORTAL_COOKIE_NEWV": "", "EPORTAL_USER_GROUP": "",
             "EPORTAL_COOKIE_SERVER_NAME": ""
         }
-
-        print(f"\nManually setting additional cookies for domain: {cookie_domain_to_set}, path: {app_path}")
+        # msg = f"\n为域手动设置其他 Cookie: {cookie_domain_to_set}, 路径: {app_path}"
+        print(f"\n为域手动设置其他 Cookie: {cookie_domain_to_set}, 路径: {app_path}")
+        # log_messages.append(msg.strip())
         for name, value in cookies_to_set_manually.items():
             session.cookies.set(name, value, domain=cookie_domain_to_set, path=app_path)
-
-        print(f"Session cookies after manual additions: {session.cookies.get_dict()}")
-        # --- END: Manually set/override specific cookies in the session ---
+        # msg = f"手动添加后的会话 Cookie: {session.cookies.get_dict()}"
+        print(f"手动添加后的会话 Cookie: {session.cookies.get_dict()}")  # Keep for CLI debugging
+        # log_messages.append(msg)
 
     except requests.exceptions.RequestException as e_cookie:
-        print(f"Warning: Error during cookie pre-fetch from {cookie_fetch_url}: {e_cookie}")
-        # If cookie pre-fetch fails, subsequent calls might also fail. Consider if script should abort.
+        # msg = f"警告: 从 {cookie_fetch_url} 预取 Cookie 时出错: {e_cookie}"
+        print(f"警告: 从 {cookie_fetch_url} 预取 Cookie 时出错: {e_cookie}")
+        # log_messages.append(msg)
+        # Continue, as login might still work or fail gracefully later
 
-    page_info = get_page_info(session, base_url, current_query_string)  # Pass session
+    page_info = get_page_info(session, base_url, current_query_string)
 
     if not page_info:
-        print("Failed to get page info. Aborting.")
-        return
+        # msg = "未能获取页面信息。正在中止。"
+        print("未能获取页面信息。正在中止。")
+        # log_messages.append(msg)
+        return {"success": False, "message": "未能获取页面信息"}
 
     password_encrypt_enabled = page_info.get("passwordEncrypt") == "true"
     public_key_exponent = page_info.get("publicKeyExponent")
     public_key_modulus = page_info.get("publicKeyModulus")
 
-    print(f"\nPassword encryption enabled: {password_encrypt_enabled}")
+    # msg = f"\n密码加密已启用: {password_encrypt_enabled}"
+    print(f"\n密码加密已启用: {password_encrypt_enabled}")
+    # log_messages.append(msg.strip())
 
     password_for_request = password
 
     if password_encrypt_enabled:
         if not public_key_exponent or not public_key_modulus:
-            print(
-                "Error: RSA public key components (exponent/modulus) not found in page_info, but encryption is enabled.")
-            return
+            # msg = "错误: 在 page_info 中未找到 RSA 公钥组件 (exponent/modulus)，但加密已启用。"
+            print("错误: 在 page_info 中未找到 RSA 公钥组件 (exponent/modulus)，但加密已启用。")
+            # log_messages.append(msg)
+            return {"success": False, "message": "RSA 公钥组件缺失"}
 
+        # msg = f"RSA Exponent: {public_key_exponent}"
         print(f"RSA Exponent: {public_key_exponent}")
+        # log_messages.append(msg) # Exponent/Modulus might be too verbose
+        # msg = f"RSA Modulus: {public_key_modulus[:30]}..."
         print(f"RSA Modulus: {public_key_modulus[:30]}...")
-        mac_address=   mac_address_for_encryption
-        password_to_encrypt_js_style = password + ">" + mac_address
+        # log_messages.append(msg)
+
+        password_to_encrypt_js_style = password + ">" + mac_address_for_encryption  # Use the determined mac_address_for_encryption
         reversed_password_to_encrypt = password_to_encrypt_js_style[::-1]
 
         encrypted_pass = encrypt_password(
@@ -341,12 +357,17 @@ def main():
             public_key_modulus
         )
         if not encrypted_pass:
-            print("Password encryption failed. Aborting.")
-            return
-        print(f"Encrypted password (first 30 chars): {encrypted_pass[:30]}...")
+            # msg = "密码加密失败。正在中止。"
+            print("密码加密失败。正在中止。")
+            # log_messages.append(msg)
+            return {"success": False, "message": "密码加密失败"}
+
+        # msg = f"加密后的密码 (前30个字符): {encrypted_pass[:30]}..."
+        print(f"加密后的密码 (前30个字符): {encrypted_pass[:30]}...")
+        # log_messages.append(msg)
         password_for_request = encrypted_pass
 
-    perform_login(  # Pass session
+    login_result_data = perform_login(  # This function now returns the result
         session,
         base_url,
         username,
@@ -357,6 +378,56 @@ def main():
         operator_password,
         password_encrypt_enabled
     )
+
+    if not login_result_data:
+        # msg = "登录请求失败或解码响应时出错。"
+        print("登录请求失败或解码响应时出错。")
+        # log_messages.append(msg)
+        return {"success": False, "message": "登录请求失败或响应无效"}
+
+    # CLI print for login_result_data is inside perform_login,
+    # but we need to construct a summary for the return value.
+    if login_result_data.get("result") == "success":
+        # msg = "登录成功!"
+        # print(msg) # Already printed in perform_login
+        # log_messages.append(msg)
+        # ... other detail prints ...
+        return {"success": True, "message": login_result_data.get('message', "登录成功!"), "details": login_result_data}
+    else:
+        # msg = "登录失败。"
+        # print(msg) # Already printed in perform_login
+        # log_messages.append(msg)
+        # ... other detail prints ...
+        return {"success": False, "message": login_result_data.get('message', "登录失败。"),
+                "details": login_result_data}
+
+
+def main():
+    """Main function to perform login, for standalone script execution."""
+    print("校园网自动登录脚本")
+    print("=" * 30)
+
+    settings = load_or_create_config()
+
+    # Create a new session for each standalone run
+    # Using 'with' ensures the session is closed if it were to implement __exit__
+    # requests.Session() itself doesn't need to be closed via 'with' but it's good practice if it did.
+    session = requests.Session()
+    try:
+        login_status = attempt_DTS_AutoLogin(settings, session)
+    finally:
+        session.close()  # Explicitly close the session
+
+    print("\n最终登录尝试状态:")
+    if login_status.get("success"):  # Check .get("success") as key might be missing if error before return
+        print("成功!")
+    else:
+        print("失败.")
+
+    print("消息:", login_status.get("message", "无消息。"))
+
+    if "details" in login_status and login_status["details"]:
+        print("服务器响应详情:", login_status["details"])
 
 
 # Modify get_query_string_from_captive_portal to accept and use session
@@ -444,26 +515,27 @@ def perform_login(session, base_url, username, password, service_name, query_str
     try:
         response = session.post(login_url, data=payload_str, headers=headers, timeout=15)  # Use session.post
         response.raise_for_status()
-        login_result = response.json()
+        login_result = response.json()  # This is the dict to be returned
 
-        print("\n--- Login Result ---")
+        # Print statements for CLI remain, but the function now returns the dict
+        print("\n--- 登录结果 ---")
         if login_result.get("result") == "success":
-            print("Login successful!")
-            print(f"User Index: {login_result.get('userIndex')}")
-            print(f"Message: {login_result.get('message', 'N/A')}")
+            print("登录成功!")
+            print(f"用户索引: {login_result.get('userIndex')}")
+            print(f"消息: {login_result.get('message', 'N/A')}")
             if login_result.get("userUrl"):
-                print(f"Redirect URL: {login_result.get('userUrl')}")
+                print(f"重定向 URL: {login_result.get('userUrl')}")
         else:
-            print("Login failed.")
-            print(f"Result code: {login_result.get('result')}")
-            print(f"Message: {login_result.get('message', 'N/A')}")
+            print("登录失败。")
+            print(f"结果代码: {login_result.get('result')}")
+            print(f"消息: {login_result.get('message', 'N/A')}")
             if login_result.get("validCodeUrl"):
-                print("CAPTCHA might be required. New CAPTCHA URL:", login_result.get("validCodeUrl"))
+                print("可能需要验证码。新的验证码 URL:", login_result.get("validCodeUrl"))
 
-        return login_result
+        return login_result  # Return the JSON response as a dictionary
 
     except requests.exceptions.RequestException as e:
-        print(f"Error during login request: {e}")
+        print(f"登录请求期间出错: {e}")
         return None
     except ValueError as e:
         print(f"Error decoding login response JSON: {e}")
