@@ -136,7 +136,29 @@ class NetworkLoginWorker(QThread):
 class CampusLoginApp(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.settings_file_path = DTS_AutoLogin.CONFIG_FILE_NAME
+
+        # Determine application path
+        if getattr(sys, 'frozen', False):
+            # If the application is run as a bundle/exe
+            application_path = os.path.dirname(sys.executable)
+        else:
+            # If the application is run as a .py script
+            application_path = os.path.dirname(os.path.abspath(__file__))
+
+        # Assume DTS_AutoLogin.CONFIG_FILE_NAME is just the filename, e.g., "config.ini"
+        # If it might contain path components, this needs adjustment or clarification.
+        # For now, we assume it's a simple filename.
+        config_filename = DTS_AutoLogin.CONFIG_FILE_NAME
+        if os.path.isabs(config_filename):
+            # If CONFIG_FILE_NAME is already an absolute path, use it directly.
+            # This might be an edge case depending on how DTS_AutoLogin.CONFIG_FILE_NAME is defined.
+            self.settings_file_path = config_filename
+            # Log a warning if this happens, as it might not be the intended behavior
+            # print(f"Warning: DTS_AutoLogin.CONFIG_FILE_NAME ('{config_filename}') is an absolute path. Using it directly.")
+        else:
+            # Construct absolute path for the config file in the application's directory
+            self.settings_file_path = os.path.join(application_path, config_filename)
+
         self.current_settings = {}
         self.init_ui()
         self.load_settings_to_ui()
@@ -199,7 +221,8 @@ class CampusLoginApp(QMainWindow):
     def get_current_settings_for_worker(self):
         self.append_status_message("CampusLoginApp.get_current_settings_for_worker() 被调用。") # New log
         # This function is passed to the worker to get fresh settings
-        return DTS_AutoLogin.load_or_create_config()
+        # Return a copy to prevent modification by the worker if it's a mutable type
+        return self.current_settings.copy() if isinstance(self.current_settings, dict) else self.current_settings
 
     def start_worker(self):
         #self.append_status_message("CampusLoginApp.start_worker() 被调用。")
@@ -257,31 +280,101 @@ class CampusLoginApp(QMainWindow):
                     self.append_status_message(f"  {line.strip()}")
 
     def load_settings_to_ui(self):
-        self.current_settings = DTS_AutoLogin.load_or_create_config()
+        config = configparser.ConfigParser()
+        loaded_settings = {}
+        try:
+            if os.path.exists(self.settings_file_path):
+                config.read(self.settings_file_path, encoding='utf-8') # Specify encoding
+                if 'Settings' in config:
+                    loaded_settings['username'] = config['Settings'].get('username', '')
+                    loaded_settings['password'] = config['Settings'].get('password', '')
+                    # Load any other settings if needed
+                    for key in config['Settings']:
+                        if key not in ['username', 'password']:
+                            loaded_settings[key] = config['Settings'][key]
+                    self.append_status_message(f"配置已从 {self.settings_file_path} 加载。")
+                else:
+                    self.append_status_message(f"配置文件 {self.settings_file_path} 中缺少 'Settings' 部分。将使用默认值。")
+                    # Create 'Settings' section if missing, and prepare to save default structure
+                    config['Settings'] = {'username': '', 'password': ''}
+                    with open(self.settings_file_path, 'w', encoding='utf-8') as configfile:
+                        config.write(configfile)
+                    self.append_status_message(f"已创建带有默认 'Settings' 部分的配置文件: {self.settings_file_path}")
+                    loaded_settings = {'username': '', 'password': ''}
+
+            else:
+                self.append_status_message(f"配置文件 {self.settings_file_path} 不存在。将创建新文件并使用默认值。")
+                config['Settings'] = {
+                    'username': '',
+                    'password': ''
+                }
+                with open(self.settings_file_path, 'w', encoding='utf-8') as configfile:
+                    config.write(configfile)
+                self.append_status_message(f"已创建新的配置文件: {self.settings_file_path}")
+                loaded_settings = {'username': '', 'password': ''}
+
+        except configparser.Error as e:
+            self.append_status_message(f"读取配置文件 {self.settings_file_path} 时出错: {e}。将使用默认值。")
+            # Fallback to default empty settings in case of parsing error
+            loaded_settings = {'username': '', 'password': ''}
+            # Optionally, try to create a fresh default config if parsing failed badly
+            try:
+                config = configparser.ConfigParser() # Fresh parser
+                config['Settings'] = {'username': '', 'password': ''}
+                with open(self.settings_file_path, 'w', encoding='utf-8') as configfile: # Overwrite corrupted
+                    config.write(configfile)
+                self.append_status_message(f"已用默认值覆盖/创建配置文件: {self.settings_file_path}，因为发生解析错误。")
+            except Exception as e_create:
+                self.append_status_message(f"尝试创建默认配置文件失败: {e_create}")
+
+        except Exception as e: # Catch other potential errors during file I/O
+            self.append_status_message(f"加载或创建配置文件时发生未知错误: {e}。将使用默认值。")
+            loaded_settings = {'username': '', 'password': ''}
+
+
+        self.current_settings = loaded_settings
         self.username_input.setText(self.current_settings.get('username', ''))
         self.password_input.setText(self.current_settings.get('password', ''))
-        self.append_status_message("配置已加载。")
+        # self.append_status_message("配置已加载到UI。") # Message is now more specific above
 
     def save_settings_from_ui(self):
         config = configparser.ConfigParser()
+        new_settings_for_config_object = {}
         try:
-            # Read existing config to preserve other settings
+            # Read existing config to preserve other sections or settings not managed by UI
+            # This is important if the config file might have other data.
             if os.path.exists(self.settings_file_path):
-                config.read(self.settings_file_path)
+                config.read(self.settings_file_path, encoding='utf-8')
 
             if 'Settings' not in config:
                 config['Settings'] = {}
 
-            config['Settings']['username'] = self.username_input.text()
-            config['Settings']['password'] = self.password_input.text()
-            # Preserve other settings that might be in the file
-            for key, value in self.current_settings.items():
-                if key not in ['username', 'password'] and key not in config['Settings']:
-                    config['Settings'][key] = value
+            # Update settings from UI
+            ui_username = self.username_input.text()
+            ui_password = self.password_input.text()
+            config['Settings']['username'] = ui_username
+            config['Settings']['password'] = ui_password
+            new_settings_for_config_object['username'] = ui_username
+            new_settings_for_config_object['password'] = ui_password
 
-            with open(self.settings_file_path, 'w') as configfile:
+            # Preserve other existing settings from self.current_settings
+            # that are not directly from the UI input fields being saved now.
+            # This ensures that if self.current_settings had other keys loaded,
+            # they are also written back if they are not already in the config object
+            # from the read operation.
+            for key, value in self.current_settings.items():
+                if key not in ['username', 'password']: # Don't overwrite UI values
+                    if key not in config['Settings']: # Add if not already present from file read
+                        config['Settings'][key] = str(value) # Ensure value is string for configparser
+                    new_settings_for_config_object[key] = value
+
+
+            with open(self.settings_file_path, 'w', encoding='utf-8') as configfile:
                 config.write(configfile)
-            self.current_settings = DTS_AutoLogin.load_or_create_config()  # Reload after save
+
+            # Update self.current_settings directly from what was just prepared and saved
+            self.current_settings = new_settings_for_config_object.copy()
+
             self.append_status_message("配置已保存到 " + self.settings_file_path)
             QMessageBox.information(self, "成功", "配置已保存！")
         except Exception as e:
